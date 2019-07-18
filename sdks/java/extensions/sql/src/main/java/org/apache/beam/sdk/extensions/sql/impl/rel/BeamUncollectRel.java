@@ -19,6 +19,7 @@ package org.apache.beam.sdk.extensions.sql.impl.rel;
 
 import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
 
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.transforms.DoFn;
@@ -28,9 +29,14 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.Row;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Uncollect;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
+
+import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
 
 /** {@link BeamRelNode} to implement an uncorrelated {@link Uncollect}, aka UNNEST. */
 public class BeamUncollectRel extends Uncollect implements BeamRelNode {
@@ -43,6 +49,13 @@ public class BeamUncollectRel extends Uncollect implements BeamRelNode {
   @Override
   public RelNode copy(RelTraitSet traitSet, RelNode input) {
     return new BeamUncollectRel(getCluster(), traitSet, input, withOrdinality);
+  }
+
+  @Override
+  public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
+    BeamCostModel inpCost = BeamCostModel.convertRelOptCost(mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(input)));
+    return BeamCostModel.FACTORY.makeCost(
+        inpCost.getRows(), inpCost.getRows(), 0, inpCost.getRate(), inpCost.getWindow());
   }
 
   @Override

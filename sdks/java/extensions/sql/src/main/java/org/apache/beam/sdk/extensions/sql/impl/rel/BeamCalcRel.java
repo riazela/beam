@@ -30,6 +30,7 @@ import java.util.AbstractList;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.extensions.sql.impl.planner.BeamJavaTypeFactory;
 import org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils;
 import org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils.CharType;
@@ -59,12 +60,17 @@ import org.apache.calcite.linq4j.tree.GotoExpressionKind;
 import org.apache.calcite.linq4j.tree.ParameterExpression;
 import org.apache.calcite.linq4j.tree.Types;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptPredicateList;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Calc;
+import org.apache.calcite.rel.metadata.RelMdUtil;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rex.RexBuilder;
+import org.apache.calcite.rex.RexLocalRef;
+import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexProgram;
 import org.apache.calcite.rex.RexSimplify;
 import org.apache.calcite.rex.RexUtil;
@@ -196,6 +202,40 @@ public class BeamCalcRel extends Calc implements BeamRelNode {
 
       return projectStream;
     }
+  }
+
+  @Override
+  public double estimateRowCount(RelMetadataQuery mq) {
+    return RelMdUtil.estimateFilteredRows(getInput(), program, mq);
+  }
+
+  private static double estimateFilterSelectivity(
+      RelNode child, RexProgram program, RelMetadataQuery mq) {
+    // convert the program's RexLocalRef condition to an expanded RexNode
+    RexLocalRef programCondition = program.getCondition();
+    RexNode condition;
+    if (programCondition == null) {
+      condition = null;
+    } else {
+      condition = program.expandLocalRef(programCondition);
+    }
+    return mq.getSelectivity(child, condition);
+  }
+
+  @Override
+  public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
+    double selectivity = estimateFilterSelectivity(getInput(), program, mq);
+    BeamCostModel incost =
+        BeamCostModel.convertRelOptCost(
+            mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(getInput())));
+    // Should we use program.getExprCount()? or maybe just consider the expressions that are
+    // calculating something and exclude the projection ones?
+    return BeamCostModel.FACTORY.makeCost(
+        incost.getRows() * selectivity,
+        incost.getRate() * selectivity,
+        incost.getWindow() * selectivity,
+        incost.getRows() * program.getExprCount(),
+        incost.getRate() * program.getExprCount());
   }
 
   public int getLimitCountOfSortRel() {

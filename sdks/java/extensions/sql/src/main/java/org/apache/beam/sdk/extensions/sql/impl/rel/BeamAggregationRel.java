@@ -24,6 +24,8 @@ import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Prec
 import java.io.Serializable;
 import java.util.List;
 import javax.annotation.Nullable;
+
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.extensions.sql.impl.transform.agg.AggregationCombineFnAdapter;
 import org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils;
 import org.apache.beam.sdk.schemas.Schema;
@@ -50,11 +52,14 @@ import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.WindowingStrategy;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Lists;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelWriter;
 import org.apache.calcite.rel.core.Aggregate;
 import org.apache.calcite.rel.core.AggregateCall;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.joda.time.Duration;
 
@@ -78,6 +83,64 @@ public class BeamAggregationRel extends Aggregate implements BeamRelNode {
 
     this.windowFn = windowFn;
     this.windowFieldIndex = windowFieldIndex;
+  }
+
+  @Override public double estimateRowCount(RelMetadataQuery mq) {
+    // Assume that each sort column has 50% of the value count.
+    // Therefore one sort column has .5 * rowCount,
+    // 2 sort columns give .75 * rowCount.
+    // Zero sort columns yields 1 row (or 0 if the input is empty).
+    final int groupCount = groupSet.cardinality();
+    if (groupCount == 0) {
+      return 1;
+    } else {
+      double rowCount = super.estimateRowCount(mq);
+      rowCount *= 1.0 - Math.pow(.5, groupCount);
+      return rowCount;
+    }
+  }
+
+  public BeamCostModel estimateRowCount(BeamCostModel inputCost) {
+    // Assume that each sort column has 50% of the value count.
+    // Therefore one sort column has .5 * rowCount,
+    // 2 sort columns give .75 * rowCount.
+    // Zero sort columns yields 1 row (or 0 if the input is empty).
+    final int groupCount = groupSet.cardinality();
+    if (groupCount == 0) {
+      return BeamCostModel.FACTORY.makeCost(1,inputCost.getRate(),1, inputCost.getRows(), inputCost.getRate());
+    } else {
+      double multiplier = 1;
+      multiplier *= 1.0 - Math.pow(.5, groupCount);
+      return inputCost.multiplyBy(multiplier);
+    }
+  }
+
+
+
+  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+                                              RelMetadataQuery mq) {
+    // REVIEW jvs 24-Aug-2008:  This is bogus, but no more bogus
+    // than what's currently in Join.
+    RelOptCost ic = mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(this.input));
+    BeamCostModel inputCost;
+    if (ic instanceof BeamCostModel){
+      inputCost = estimateRowCount((BeamCostModel) ic);
+    }
+    else {
+      inputCost = BeamCostModel.FACTORY.makeCost(ic.getRows(),ic.getCpu(),ic.getIo());
+      inputCost = estimateRowCount(inputCost);
+    }
+
+    // Aggregates with more aggregate functions cost a bit more
+    float multiplier = 1f + (float) aggCalls.size() * 0.125f;
+    for (AggregateCall aggCall : aggCalls) {
+      if (aggCall.getAggregation().getName().equals("SUM")) {
+        // Pretend that SUM costs a little bit more than $SUM0,
+        // to make things deterministic.
+        multiplier += 0.0125f;
+      }
+    }
+    return inputCost.multiplyBy(multiplier);
   }
 
   @Override

@@ -21,15 +21,24 @@ import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Prec
 
 import java.util.Map;
 import org.apache.beam.sdk.extensions.sql.BeamSqlTable;
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.extensions.sql.impl.BeamCalciteTable;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.Row;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
+
+import java.util.Map;
+
+import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions.checkArgument;
 
 /** BeamRelNode to replace a {@code TableScan} node. */
 public class BeamIOSourceRel extends TableScan implements BeamRelNode {
@@ -76,6 +85,28 @@ public class BeamIOSourceRel extends TableScan implements BeamRelNode {
           input);
       return beamTable.buildIOReader(input.getPipeline().begin());
     }
+  }
+
+  @Override
+  public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
+    // TODO: (Alireza Samadian) change this.
+    BeamRowCountStatistics rowCountStatistics =
+        sqlTable.getRowCount(PipelineOptionsFactory.create());
+
+    if (rowCountStatistics.isUnknown()) {
+      if (sqlTable.isBounded() == PCollection.IsBounded.BOUNDED) {
+        return BeamCostModel.FACTORY.makeCost(100d, 0d, 100d, 100d, 0d);
+      } else {
+        return BeamCostModel.FACTORY.makeCost(0d, 1d, 100d, 0d, 1d);
+      }
+    }
+
+    return BeamCostModel.FACTORY.makeCost(
+        rowCountStatistics.getRowCount().doubleValue(),
+        rowCountStatistics.getRate(),
+        rowCountStatistics.getRowCount().doubleValue(),
+        rowCountStatistics.getRowCount().doubleValue(),
+        rowCountStatistics.getRate());
   }
 
   protected BeamSqlTable getBeamSqlTable() {

@@ -31,6 +31,7 @@ import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.extensions.sql.BeamSqlSeekableTable;
 import org.apache.beam.sdk.extensions.sql.BeamSqlTable;
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.extensions.sql.impl.transform.BeamJoinTransforms;
 import org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils;
 import org.apache.beam.sdk.schemas.Schema;
@@ -70,6 +71,17 @@ import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.util.Pair;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import static org.apache.beam.sdk.schemas.Schema.toSchema;
+import static org.apache.beam.sdk.values.PCollection.IsBounded.UNBOUNDED;
+import static org.joda.time.Duration.ZERO;
 
 /**
  * {@code BeamRelNode} to replace a {@code Join} node.
@@ -135,6 +147,43 @@ public class BeamJoinRel extends Join implements BeamRelNode {
       return BeamRelNode.super.getPCollectionInputs();
     }
   }
+
+
+  /**
+   * This method checks if a join is legal and can be converted into Beam SQL. It is used during
+   * planning and applying {@link
+   * org.apache.beam.sdk.extensions.sql.impl.rule.BeamJoinAssociateRule} and {@link
+   * org.apache.beam.sdk.extensions.sql.impl.rule.BeamJoinPushThroughJoinRule}
+   */
+  public static boolean isJoinLegal(Join join) {
+    try {
+      extractJoinRexNodes(join.getCondition());
+    } catch (UnsupportedOperationException e) {
+      return false;
+    }
+    return true;
+  }
+
+  @Override
+  public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
+    double selectivity = mq.getSelectivity(this, getCondition());
+    BeamCostModel leftCost =
+        BeamCostModel.convertRelOptCost(mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(left)));
+    BeamCostModel rightCost =
+        BeamCostModel.convertRelOptCost(mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(right)));
+    double rowCount = Math.max(leftCost.getRows() * rightCost.getRows() * selectivity, 1d);
+    double rate =
+        (leftCost.getRate() * rightCost.getWindow() + leftCost.getWindow() * rightCost.getRate())
+            * selectivity;
+    double windowSize = Math.max(leftCost.getWindow() * rightCost.getWindow() * selectivity, 1d);
+    return BeamCostModel.FACTORY.makeCost(
+        rowCount,
+        rate,
+        windowSize,
+        rowCount + leftCost.getRows() + rightCost.getRows(),
+        rate + leftCost.getRate() + rightCost.getRate());
+  }
+
 
   @Override
   public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {

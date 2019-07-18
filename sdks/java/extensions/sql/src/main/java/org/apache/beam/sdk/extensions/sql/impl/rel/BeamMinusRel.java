@@ -17,16 +17,21 @@
  */
 package org.apache.beam.sdk.extensions.sql.impl.rel;
 
-import java.util.List;
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.Row;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Minus;
 import org.apache.calcite.rel.core.SetOp;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
+
+import java.util.List;
 
 /**
  * {@code BeamRelNode} to replace a {@code Minus} node.
@@ -43,6 +48,28 @@ public class BeamMinusRel extends Minus implements BeamRelNode {
   @Override
   public SetOp copy(RelTraitSet traitSet, List<RelNode> inputs, boolean all) {
     return new BeamMinusRel(getCluster(), traitSet, inputs, all);
+  }
+
+  @Override
+  public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
+    // REVIEW jvs 30-May-2005:  I just pulled this out of a hat.
+    final List<RelNode> inputs = this.getInputs();
+    BeamCostModel dRows =
+        BeamCostModel.convertRelOptCost(
+            mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(inputs.get(0))));
+    double rowsSum = dRows.getRows();
+    double rateSum = dRows.getRate();
+    for (int i = 1; i < inputs.size(); i++) {
+      BeamCostModel t =
+          BeamCostModel.convertRelOptCost(
+              mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(inputs.get(i))));
+      dRows = dRows.minus(t.multiplyBy(0.5));
+      rowsSum += t.getRows();
+      rateSum += t.getRate();
+    }
+
+    return BeamCostModel.FACTORY.makeCost(
+        dRows.getRows(), dRows.getRate(), dRows.getWindow(), rowsSum, rateSum);
   }
 
   @Override

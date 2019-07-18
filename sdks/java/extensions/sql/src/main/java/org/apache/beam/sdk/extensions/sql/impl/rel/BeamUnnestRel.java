@@ -17,8 +17,7 @@
  */
 package org.apache.beam.sdk.extensions.sql.impl.rel;
 
-import java.util.List;
-import javax.annotation.Nullable;
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.transforms.DoFn;
@@ -29,14 +28,20 @@ import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.Row;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelWriter;
 import org.apache.calcite.rel.core.Correlate;
 import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.core.Uncollect;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.validate.SqlValidatorUtil;
+
+import javax.annotation.Nullable;
+import java.util.List;
 
 /**
  * {@link BeamRelNode} to implement UNNEST, supporting specifically only {@link Correlate} with
@@ -72,6 +77,13 @@ public class BeamUnnestRel extends Uncollect implements BeamRelNode {
         getCluster().getTypeFactory(),
         null,
         ImmutableList.of());
+  }
+
+  @Override
+  public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
+    BeamCostModel inpCost = BeamCostModel.convertRelOptCost(mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(input)));
+    return BeamCostModel.FACTORY.makeCost(
+        inpCost.getRows(), inpCost.getRows(), 0, inpCost.getRate(), inpCost.getWindow());
   }
 
   @Override

@@ -30,6 +30,7 @@ import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.VarIntCoder;
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.extensions.sql.impl.utils.CalciteUtils;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.state.StateSpec;
@@ -50,16 +51,20 @@ import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.WindowingStrategy;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelCollation;
 import org.apache.calcite.rel.RelCollationImpl;
 import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Sort;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.util.Util;
 
 /**
  * {@code BeamRelNode} to replace a {@code Sort} node.
@@ -140,6 +145,17 @@ public class BeamSortRel extends Sort implements BeamRelNode {
 
   public int getCount() {
     return count;
+  }
+
+  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+                                              RelMetadataQuery mq) {
+    // Higher cost if rows are wider discourages pushing a project through a
+    // sort.
+    BeamCostModel inputCost = BeamCostModel.convertRelOptCost(mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(input)));
+    final double rowCount = inputCost.getRows();
+    final double bytesPerRow = getRowType().getFieldCount() * 4;
+    final double cpu = Util.nLogN(rowCount) * bytesPerRow;
+    return BeamCostModel.FACTORY.makeCost(rowCount, cpu, 0, inputCost.getRate(), inputCost.getWindow());
   }
 
   @Override

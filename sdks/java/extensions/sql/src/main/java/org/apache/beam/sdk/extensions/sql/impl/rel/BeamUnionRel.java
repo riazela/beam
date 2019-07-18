@@ -17,17 +17,22 @@
  */
 package org.apache.beam.sdk.extensions.sql.impl.rel;
 
-import java.util.List;
+import org.apache.beam.sdk.extensions.sql.impl.planner.BeamCostModel;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.Row;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.SetOp;
 import org.apache.calcite.rel.core.Union;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
+
+import java.util.List;
 
 /**
  * {@link BeamRelNode} to replace a {@link Union}.
@@ -65,6 +70,22 @@ public class BeamUnionRel extends Union implements BeamRelNode {
   public BeamUnionRel(
       RelOptCluster cluster, RelTraitSet traits, List<RelNode> inputs, boolean all) {
     super(cluster, traits, inputs, all);
+  }
+
+  @Override
+  public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
+    BeamCostModel cost = BeamCostModel.FACTORY.makeZeroCost();
+    for (RelNode input : this.getInputs()) {
+      BeamCostModel inpCost =
+          BeamCostModel.convertRelOptCost(mq.getNonCumulativeCost(BeamSqlRelUtils.getInput(input)));
+      cost = cost.plus(inpCost);
+    }
+
+    if (!all) {
+      cost = cost.multiplyBy(0.5);
+    }
+    return BeamCostModel.FACTORY.makeCost(
+        cost.getRows(), cost.getRows(), 0, cost.getRate(), cost.getWindow());
   }
 
   @Override
